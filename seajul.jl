@@ -15,35 +15,36 @@ export LQREnv
 export LinearZEnv
 
 # ===== PyGym Env ====================================
-function do_rollout_with_stats(env::PyObject, policy)
-    x = env.reset()
+function do_rollout_with_stats(env::PyObject, policy, T)
+    x = env.reset()::Array{T,1}
     done = false
     reward = 0.0
 
-    x_hist = zeros(typeof(x[1]), env.observation_space.shape[1],env._max_episode_steps)
+    x_hist = zeros(T, env.observation_space.shape[1],env._max_episode_steps)
     i = 1
 
-    act_low = convert(typeof(x), env.action_space.low)
-    act_high = convert(typeof(x), env.action_space.high)
+    act_high = convert(Array{T,1}, env.action_space.high)
+    act_low = convert(Array{T,1}, env.action_space.low)
 
     while !done
         x_hist[:,i] = copy(x); i+=1
-        u = clamp(policy(x), act_low, act_high)
-        x, r, done, _ = env.step(u)
+        u = clamp(policy(x), act_low, act_low)::Array{T,1}
+        x, r, done, _ = env.step(u)::Tuple{Array{T,1}, Float64, Bool, Any}
         reward += r
     end
-    #println(vec(mean(x_hist[:,1:i-1],dims=2)))
-    return reward::Float64, vec(mean(x_hist[:,1:i-1],dims=2)), vec(std(x_hist[:,1:i-1],dims=2)).+1e-6
+    reward = convert(T,reward)
+    eps = convert(T,1e-6)
+    return reward::T, vec(mean(x_hist[:,1:i-1],dims=2)), vec(std(x_hist[:,1:i-1],dims=2)).+eps
 end
 
-function do_rollout(env::PyObject, policy)
-    x = env.reset()::Array{<:AbstractFloat, 1}
+function do_rollout(env::PyObject, policy, T)
+    x = env.reset()::Array{T, 1}
     done = false
     reward = 0.0
     
     while !done
-        u = clamp(policy(x), env.action_space.low, env.action_space.high)
-        x, r, done, _ = env.step(u)::Tuple{Array{<:AbstractFloat,1}, Float64, Bool, PyObject}
+        u = clamp(policy(x), env.action_space.low, env.action_space.high)::Array{T,1}
+        x, r, done, _ = env.step(u)::Tuple{Array{T,1}, Float64, Bool, Any}
         reward += r
     end
     #println(vec(mean(x_hist[:,1:i-1],dims=2)))
@@ -147,9 +148,9 @@ function ars_v1t!(env, θ::Array{<:AbstractFloat,2}, num_epochs::Int; α = .01, 
 
     for i in 1:num_epochs
         for j in 1:N
-            δ[j,:,:] = randn(T,size(θ))*σ
-            r₊[j] = do_rollout(env, (x)->(θ+δ[j,:,:])*x)
-            r₋[j] = do_rollout(env, (x)->(θ-δ[j,:,:])*x)
+            δ[j,:,:] = randn(T,size(θ))
+            r₊[j] = do_rollout(env, (x)->(θ+δ[j,:,:])*x,T)
+            r₋[j] = do_rollout(env, (x)->(θ-δ[j,:,:])*x,T)
         end
         
         for j in 1:N
@@ -170,23 +171,27 @@ function ars_v1t!(env, θ::Array{<:AbstractFloat,2}, num_epochs::Int; α = .01, 
 end
 
 
-function ars_v2t!(env, θ, μ, Σ; α = .01, N = 32, σ = .02, num_epochs=1000, b=16)
-    r₊ = SharedArray{Float64}(N)
-    r₋ = SharedArray{Float64}(N)
-    rₘ = zeros(Float64,N)
-    r_hist = zeros(Float64,num_epochs)
-    δ =  SharedArray{Float64}((N, size(θ)[1], size(θ)[2]))
+function ars_v2t!(env, θ, num_epochs; T=Float64, α = .01, N = 32, σ = .02, b=16)
+    r₊ = SharedArray{T}(N)
+    r₋ = SharedArray{T}(N)
+    rₘ = zeros(T,N)
+    r_hist = zeros(T,num_epochs)
+    δ =  SharedArray{T}((N, size(θ)[1], size(θ)[2]))
 
-    sp = SharedArray{Float64}((env.observation_space.shape[1], N))
-    sm = SharedArray{Float64}((env.observation_space.shape[1], N))
-    mp = SharedArray{Float64}((env.observation_space.shape[1], N))
-    mm = SharedArray{Float64}((env.observation_space.shape[1], N))
+    μ = zeros(T,size(θ)[2])
+    Σ = ones(T,size(θ)[2])
+    σ = convert(T, σ)
+    α = convert(T, α)
+
+    sp = SharedArray{T}(size(θ)[2], N)
+    sm = SharedArray{T}(size(θ)[2], N)
+    mp = SharedArray{T}(size(θ)[2], N)
+    mm = SharedArray{T}(size(θ)[2], N)
 
     for i in 1:num_epochs
         @sync @distributed for j in 1:N
-            δ[j,:,:] = randn(size(θ))*σ
-            r₊[j], mp[:,j], sp[:,j] = do_rollout_with_stats(env, (x)->(θ+δ[j,:,:])*((x - μ)./Σ))
-            r₋[j], mm[:,j], sm[:,j] = do_rollout_with_stats(env, (x)->(θ-δ[j,:,:])*((x - μ)./Σ))
+            r₊[j], mp[:,j], sp[:,j] = do_rollout_with_stats(env, (x)->((θ+δ[j,:,:])*((x - μ)./Σ)),T)
+            r₋[j], mm[:,j], sm[:,j] = do_rollout_with_stats(env, (x)->((θ-δ[j,:,:])*((x - μ)./Σ)),T)
         end
         
         for j in 1:N
@@ -196,7 +201,7 @@ function ars_v2t!(env, θ, μ, Σ; α = .01, N = 32, σ = .02, num_epochs=1000, 
         top = sortperm(rₘ,rev=true)[1:b]
 
         r_hist[i] = mean(rₘ[top])
-        σᵣ = √(std(r₋)^2 + std(r₊)^2) + 1e-6
+        σᵣ = √(std(r₋)^2 + std(r₊)^2) + convert(T,1e-6)
 
         ∇ = α/(b*σᵣ) * sum((r₊[top] - r₋[top]).*reshape(δ[top,:,:],(b,size(θ)[1]*size(θ)[2])),dims=1)
         θ = θ + reshape(∇,size(θ))
@@ -207,7 +212,7 @@ function ars_v2t!(env, θ, μ, Σ; α = .01, N = 32, σ = .02, num_epochs=1000, 
     
     end
 
-    return r_hist, θ, μ, Σ
+    return θ, r_hist, μ, Σ
 
 end
 

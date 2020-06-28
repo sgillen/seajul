@@ -1,17 +1,36 @@
-module ws
+#module ws
+num_trials = 1
+epochs = 5
+in_size = 22; out_size = 6
+T = Float32
 
-include("seajul.jl")
 
-using .SJ
-using Revise
-using PyCall
+using SharedArrays
+using Distributed
+#addprocs(num_trials)
 
-gym = pyimport("gym")
-pyimport("pybullet_envs")
-env = gym.make("Walker2DBulletEnv-v0")
+@everywhere using Revise
+@everywhere using PyCall
+@everywhere using Random
 
-W = zeros(Float32, 6,22)
-W,rews = SJ.ars_v1t!(env,W,5)
+
+@everywhere include("seajul.jl")
+
+Wa = SharedArray{T}(num_trials, out_size, in_size)
+ra = SharedArray{T}(num_trials, epochs)
+#@sync @distributed
+for i in 1:num_trials
+    seed = rand(1:2^16)
+    Random.seed!(seed)
+    gym = pyimport("gym")
+    pyimport("pybullet_envs")
+    env = gym.make("Walker2DBulletEnv-v0")
+
+    W = zeros(T, out_size, in_size)
+    W,rews = SJ.ars_v1t!(env,W,epochs)
+    Wa[i,:,:] = W 
+    ra[i,:] = rews
+end
 #@time W,rews = SJ.ars_v1t!(env,W,num_epochs=10)
 
 # function do_rollout_eval(env::PyObject, W)
@@ -38,7 +57,7 @@ W,rews = SJ.ars_v1t!(env,W,5)
 
 # R,X = do_rollout_eval(env,W)
 
-end
+#end
 
 
 
@@ -54,18 +73,18 @@ end
 
 
 
-function f2(a)
-    return sum(a)
-end
+# function f2(a)
+#     return sum(a)
+# end
 
-function f(a::Array{<:AbstractFloat,1})
-    return sum(a)
-end
+# function f(a::Array{<:AbstractFloat,1})
+#     return sum(a)
+# end
 
-function g(a::Array{Float64,1})
-    return sum(a)
-end
+# function g(a::Array{Float64,1})
+#     return sum(a)
+# end
 
-function h(a::Array{AbstractFloat,1})
-    return sum(a)
-end
+# function h(a::Array{AbstractFloat,1})
+#     return sum(a)
+# end

@@ -6,6 +6,7 @@
         - using SharedArrays
         - using Distributed
         - using PyCall
+        - using OpenAIGym
         - 
         - export ars!
         - export ars_v1t!
@@ -13,42 +14,38 @@
         - export LQREnv
         - export LinearZEnv
         - 
-        - 
-        - # ===== Gym Env ====================================
-        - function do_rollout_with_stats(env::PyObject, policy)
-        -     x = env.reset()
+        - # ===== PyGym Env ====================================
+        - function do_rollout_with_stats(env::PyObject, policy, T)
+        -     x = env.reset()::Array{T,1}
         -     done = false
         -     reward = 0.0
         - 
-        -     x_hist = zeros(typeof(x[1]), env.observation_space.shape[1],env._max_episode_steps)
+        -     x_hist = zeros(T, env.observation_space.shape[1],env._max_episode_steps)
         -     i = 1
         - 
-        -     act_low = convert(typeof(x), env.action_space.low)
-        -     act_high = convert(typeof(x), env.action_space.high)
+        -     act_high = convert(Array{T,1}, env.action_space.high)
+        -     act_low = convert(Array{T,1}, env.action_space.low)
         - 
         -     while !done
         -         x_hist[:,i] = copy(x); i+=1
-        -         u = clamp(policy(x), act_low, act_high)
-        -         x, r, done, _ = env.step(u)
+        -         u = clamp(policy(x), act_low, act_low)::Array{T,1}
+        -         x, r, done, _ = env.step(u)::Tuple{Array{T,1}, Float64, Bool, Any}
         -         reward += r
         -     end
-        -     #println(vec(mean(x_hist[:,1:i-1],dims=2)))
-        -     return reward::Float64, vec(mean(x_hist[:,1:i-1],dims=2)), vec(std(x_hist[:,1:i-1],dims=2)).+1e-6
+        -     reward = convert(T,reward)
+        -     eps = convert(T,1e-6)
+        -     return reward::T, vec(mean(x_hist[:,1:i-1],dims=2)), vec(std(x_hist[:,1:i-1],dims=2)).+eps
         - end
         - 
-        - function do_rollout(env::PyObject, policy)
-  3988122     x = env.reset()
+        - function do_rollout(env::PyObject, policy, T)
+  6018302     x = env.reset()::Array{T, 1}
         -     done = false
-    11904     reward = convert(typeof(x[1]), 0.0)
-        - 
-  1690208     act_low = convert(Array{Float64,1}, env.action_space.low)
-    51200     act_high = convert(Array{Float64,1}, env.action_space.high)
-        - 
+        -     reward = 0.0
+        -     
         0     while !done
-  2226432         u = clamp(policy(x), act_low, act_high)
-  3501881         x, r, done, _ = env.step(u)
-   556608         r = convert(typeof(x[1]),r)
-   278304         reward += r
+  7660591         u = clamp(policy(x), env.action_space.low, env.action_space.high)::Array{T,1}
+  3596112         x, r, done, _ = env.step(u)::Tuple{Array{T,1}, Float64, Bool, Any}
+        0         reward += r
         -     end
         -     #println(vec(mean(x_hist[:,1:i-1],dims=2)))
         0     return reward
@@ -141,8 +138,8 @@
         - ## ==== Integration ==========================
         - function ars_v1t!(env, θ::Array{<:AbstractFloat,2}, num_epochs::Int; α = .01, N = 32, b = 16, σ = .02)
     33615     T = typeof(θ[1])
-   836292     δ =  zeros(T, (N, size(θ)[1], size(θ)[2]))
-   629522     r₊ = zeros(T, (N))
+   516468     δ =  zeros(T, (N, size(θ)[1], size(θ)[2]))
+   629474     r₊ = zeros(T, (N))
       208     r₋ = zeros(T, (N) )
       208     rₘ = zeros(T,N)
       112     r_hist = zeros(T,num_epochs)
@@ -151,22 +148,22 @@
         - 
         0     for i in 1:num_epochs
         0         for j in 1:N
- 54002537             δ[j,:,:] = randn(T,size(θ))*σ
- 32120272             r₊[j] = do_rollout(env, (x)->(θ+δ[j,:,:])*x)
- 23461342             r₋[j] = do_rollout(env, (x)->(θ-δ[j,:,:])*x)
+ 29891247             δ[j,:,:] = randn(T,size(θ))
+  9743228             r₊[j] = do_rollout(env, (x)->(θ+δ[j,:,:])*x,T)
+ 12481497             r₋[j] = do_rollout(env, (x)->(θ-δ[j,:,:])*x,T)
         -         end
         -         
         0         for j in 1:N
-   204774             rₘ[j] = max(r₋[j], r₊[j])
+   208374             rₘ[j] = max(r₋[j], r₊[j])
         -         end
         - 
- 16848775         top = sortperm(rₘ,rev=true)[1:b]
+ 16573508         top = sortperm(rₘ,rev=true)[1:b]
         - 
-  2236787         r_hist[i] = mean(rₘ[top])
-    48901         σᵣ = √(std(r₋)^2 + std(r₊)^2) + convert(T, 1e-6)
+  2236563         r_hist[i] = mean(rₘ[top])
+    48757         σᵣ = √(std(r₋)^2 + std(r₊)^2) + convert(T, 1e-6)
         -         
- 49895705         ∇ = α/(N*σᵣ) * sum((r₊[top] - r₋[top]).*reshape(δ[top,:,:],(b,size(θ)[1]*size(θ)[2])),dims=1)
-   277817         θ = θ + reshape(∇,size(θ))
+ 49142741         ∇ = α/(N*σᵣ) * sum((r₊[top] - r₋[top]).*reshape(δ[top,:,:],(b,size(θ)[1]*size(θ)[2])),dims=1)
+   278009         θ = θ + reshape(∇,size(θ))
         -     end
         - 
        32     return θ, r_hist
@@ -174,23 +171,27 @@
         - end
         - 
         - 
-        - function ars_v2t!(env, θ, μ, Σ; α = .01, N = 32, σ = .02, num_epochs=1000, b=16)
-        -     r₊ = SharedArray{Float64}(N)
-        -     r₋ = SharedArray{Float64}(N)
-        -     rₘ = zeros(Float64,N)
-        -     r_hist = zeros(Float64,num_epochs)
-        -     δ =  SharedArray{Float64}((N, size(θ)[1], size(θ)[2]))
+        - function ars_v2t!(env, θ, num_epochs; T=Float64, α = .01, N = 32, σ = .02, b=16)
+        -     r₊ = SharedArray{T}(N)
+        -     r₋ = SharedArray{T}(N)
+        -     rₘ = zeros(T,N)
+        -     r_hist = zeros(T,num_epochs)
+        -     δ =  SharedArray{T}((N, size(θ)[1], size(θ)[2]))
         - 
-        -     sp = SharedArray{Float64}((env.observation_space.shape[1], N))
-        -     sm = SharedArray{Float64}((env.observation_space.shape[1], N))
-        -     mp = SharedArray{Float64}((env.observation_space.shape[1], N))
-        -     mm = SharedArray{Float64}((env.observation_space.shape[1], N))
+        -     μ = zeros(T,size(θ)[2])
+        -     Σ = ones(T,size(θ)[2])
+        -     σ = convert(T, σ)
+        -     α = convert(T, α)
+        - 
+        -     sp = SharedArray{T}(size(θ)[2], N)
+        -     sm = SharedArray{T}(size(θ)[2], N)
+        -     mp = SharedArray{T}(size(θ)[2], N)
+        -     mm = SharedArray{T}(size(θ)[2], N)
         - 
         -     for i in 1:num_epochs
         -         @sync @distributed for j in 1:N
-        -             δ[j,:,:] = randn(size(θ))*σ
-        -             r₊[j], mp[:,j], sp[:,j] = do_rollout_with_stats(env, (x)->(θ+δ[j,:,:])*((x - μ)./Σ))
-        -             r₋[j], mm[:,j], sm[:,j] = do_rollout_with_stats(env, (x)->(θ-δ[j,:,:])*((x - μ)./Σ))
+        -             r₊[j], mp[:,j], sp[:,j] = do_rollout_with_stats(env, (x)->((θ+δ[j,:,:])*((x - μ)./Σ)),T)
+        -             r₋[j], mm[:,j], sm[:,j] = do_rollout_with_stats(env, (x)->((θ-δ[j,:,:])*((x - μ)./Σ)),T)
         -         end
         -         
         -         for j in 1:N
@@ -200,7 +201,7 @@
         -         top = sortperm(rₘ,rev=true)[1:b]
         - 
         -         r_hist[i] = mean(rₘ[top])
-        -         σᵣ = √(std(r₋)^2 + std(r₊)^2) + 1e-6
+        -         σᵣ = √(std(r₋)^2 + std(r₊)^2) + convert(T,1e-6)
         - 
         -         ∇ = α/(b*σᵣ) * sum((r₊[top] - r₋[top]).*reshape(δ[top,:,:],(b,size(θ)[1]*size(θ)[2])),dims=1)
         -         θ = θ + reshape(∇,size(θ))
@@ -211,7 +212,7 @@
         -     
         -     end
         - 
-        -     return r_hist, θ, μ, Σ
+        -     return θ, r_hist, μ, Σ
         - 
         - end
         - 
