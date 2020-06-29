@@ -13,65 +13,6 @@ export ars_v2t!
 export LQREnv
 export LinearZEnv
 
-
-# =========== Trash =======================
-struct PendEnv
-    m::Float64
-    l::Float64
-    tmax::Int
-end
-
-function do_rollout_eval(env::PendEnv, policy)
-    x = randn(2)
-    reward = 0.0
-    
-    X = zeros(env.tmax,2)
-    A = zeros(env.tmax,1)
-    
-    for t in 1:env.tmax
-        a = policy(x) 
-        x = SJ.rk4(invertedPendDynamics,a,0.0,0.01,x)
-        reward -= (x[1]^2 + (1e-3*a[1])^2)
-        X[t,:] = x
-        A[t] = a[1]
-    end
-   
-    return X,A,reward
-end
-
-function invertedPendDynamics(t,o,a)
-    """ inverted pendulum 
-        o = [θ, ̇dθ]
-    """
-    # println(o)
-    # println(a)
-    # println(cos(o[1]))
-    return [o[2], (a[1] + cos(o[1])*9.8)]
-end
-
-function do_rollout(env::PendEnv, policy,T)
-    x = randn(2)
-    reward = 0.0
-
-    for t in 1:env.tmax
-        a = policy(x)
-        #println(t)
-        x = rk4(invertedPendDynamics,a,0.0,0.01,x)
-        reward -= (x[1]^2 + a[1]^2)
-    end    
-    return reward
-end
-
-function rk4(derivs, a, t0, dt, s0)
-    k1 = dt * derivs(t0, s0, a)
-    k2 = dt * derivs(t0 + dt / 2, s0 + k1 / 2, a)
-    k3 = dt * derivs(t0 + dt / 2, s0 + k2 / 2, a)
-    k4 = dt * derivs(t0 + dt, s0 + k3, a)
-    return s0 + oftype(dt,1/6) + (k1 + 2 * k2 + 2 * k3 + k4)
-end
-
-
-
 # ===== PyGym Env ====================================
 function do_rollout_with_stats(env::PyObject, policy, T)
     x = env.reset()::Array{T,1}
@@ -108,8 +49,6 @@ function do_rollout(env::PyObject, policy, T)
     #println(vec(mean(x_hist[:,1:i-1],dims=2)))
     return reward
 end
-
-
 
 ## ==== LQR ======================================
 struct LQREnv
@@ -187,7 +126,7 @@ function rk4(derivs, a, t0, dt, s0)
     k2 = dt * derivs(t0 + dt / 2, s0 + k1 / 2, a)
     k3 = dt * derivs(t0 + dt / 2, s0 + k2 / 2, a)
     k4 = dt * derivs(t0 + dt, s0 + k3, a)
-    return s0 + 1/6 * (k1 + 2 * k2 + 2 * k3 + k4)
+    return s0 + 1/6.0f0 * (k1 + 2 * k2 + 2 * k3 + k4)
 end
 
 function euler(derivs, a, t0, dt, s0)
@@ -195,45 +134,7 @@ function euler(derivs, a, t0, dt, s0)
 end 
 
 
-## ==== ARS ==========================
-function ars_v1t_dis!(env, θ::Array{<:AbstractFloat,2}, num_epochs::Int; α = .01, N = 32, b = 16, σ = .02)
-    T = typeof(θ[1])
-    δ =  SharedArray{T}(N, size(θ)[1], size(θ)[2])
-    r₊ = SharedArray{T}(N)
-    r₋ = SharedArray{T}(N)
-    rₘ = zeros(T,N)
-    r_hist = zeros(T,num_epochs)
-    σ = convert(T, σ)
-    α = convert(T, α)
-
-    for i in 1:num_epochs
-        @sync @distributed for j in 1:N
-            δ[j,:,:] = randn(T,size(θ))
-            r₊[j] = do_rollout(env, (x)->(θ+δ[j,:,:])*x,T)
-            r₋[j] = do_rollout(env, (x)->(θ-δ[j,:,:])*x,T)
-        end
-        
-        for j in 1:N
-            rₘ[j] = max(r₋[j], r₊[j])
-        end
-
-        top = sortperm(rₘ,rev=true)[1:b]
-
-        r_hist[i] = mean(rₘ[top])
-        σᵣ = √(std(r₋)^2 + std(r₊)^2) + convert(T, 1e-6)
-        
-        ∇ = α/(N*σᵣ) * sum((r₊[top] - r₋[top]).*reshape(δ[top,:,:],(b,size(θ)[1]*size(θ)[2])),dims=1)
-        θ = θ + reshape(∇,size(θ))
-    end
-
-    return θ, r_hist
-
-end
-
-
-
-
-
+## ==== Integration ==========================
 function ars_v1t!(env, θ::Array{<:AbstractFloat,2}, num_epochs::Int; α = .01, N = 32, b = 16, σ = .02)
     T = typeof(θ[1])
     δ =  zeros(T, (N, size(θ)[1], size(θ)[2]))
@@ -267,7 +168,6 @@ function ars_v1t!(env, θ::Array{<:AbstractFloat,2}, num_epochs::Int; α = .01, 
     return θ, r_hist
 
 end
-
 
 
 function ars_v2t!(env, θ, num_epochs; T=Float64, α = .01, N = 32, σ = .02, b=16)
